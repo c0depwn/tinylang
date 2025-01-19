@@ -1,0 +1,126 @@
+# basic source code
+
+char_whitespace      = ( " " | "\t" | "\n" ) .
+char_digit           = /[0-9]/ .
+char_letter          = /[a-zA-Z]/ .
+char_ascii           = /[\x00-\x7F]/ . # this matches any valid ASCII character
+
+identifier = ( char_letter  | "_" ) { char_letter | char_digit | "_"  } .
+
+# operators
+unary_op     = "!" | "-" .
+product_op   = "*" | "/" | "%" .
+sum_op       = "+" | "-" .
+shift_op     = "<<" | ">>" .
+bit_op       = "&" | "|" | "^" .
+equality_op  = "==" | "<=" | ">=" | "!=" | "<" | ">" .
+logic_op     = "&&" | "||" .
+
+infix_op     = ( procuct_op
+               | sum_op
+               | shift_op
+               | bit_op
+               | equality_op
+               | logic_op ) .
+
+assign_op    = [ product_op
+               | sum_op
+               | shift_op
+               | bit_op ] "=" .
+
+# literals
+
+bin_digit        = ( "0" | "1" ) .
+dec_digit        = /[0-9]/ .
+hex_digit        = /[A-Fa-f0-9]/ .
+dec_literal      = dec_digit { dec_digit } .
+bin_literal      = "0b" bin_digit { bin_digit } .
+hex_literal      = "0x" hex_digit { hex_digit } .
+int_literal      = ( bin_literal | dec_literal | hex_literal ) .
+bool_literal     = "true" | "false"
+string_literal   = "`" { char_ascii } "`" .
+
+
+# Programs currently consist of a single file, which makes
+# File the start-symbol.
+File        = { Declaration } .
+
+Declaration = ( VarDeclaration
+              | ConstDeclaration
+              | FuncDeclaration ) .
+
+VarDeclaration   = "var" identifier TypeIdentifier { "=" Expression } .
+
+ConstDeclaration = "const" identifier TypeIdentifier "=" ConstExpression .
+ConstExpression  = int_literal | bool_literal | string_literal .
+
+FuncDeclaration  = "fn" identifier FuncSignature Block .
+FuncSignature    = "(" [ FuncParamList ] ")" FuncResult .
+FuncResult       = [ TypeIdentifier ] .
+FuncParamList    = FuncParamItem { "," FuncParamItem } .
+FuncParamItem    = identifier TypeIdentifier .
+
+Block         = "{" StatementList "}" .
+StatementList = { Statement ";" } .
+
+Statement = ( VarDeclaration
+            | ConstDeclaration
+            | Assignment
+            | IfStatement
+            | WhileStatement
+            | ForStatement
+            | ReturnStatement
+            | ExpressionStatement ) .
+
+Assignment = ( identifier | IndexExpression ) assign_op Expression .
+
+IfStatement = "if" Expression Block [ "else" ( IfStatement | Block ) ] .
+
+WhileStatement = "while" Expression Block .
+
+ForStatement    = "for" [ ForPre ] ";" ForCondition ";" [ ForPost ] .
+ForCondition    = Expression .
+ForPre          = SimpleStatement .
+ForPost         = SimpleStatement .
+SimpleStatement = ( VarDeclaration | Assignment )
+
+ReturnStatement = "return" [ Expression ].
+
+ExpressionStatement = Expression .
+
+TypeIdentifier = BasicType | ArrayType .
+BasicType      = identifier | "int" | "string" | "bool" .
+ArrayType      =  "[" int_literal "]" TypeIdentifier .
+
+# expressions
+
+Expression = ( LiteralExpression
+             | PrefixExpression
+             | InfixExpression
+             | GroupExpression
+             | IndexExpression
+             | CallExpression ) .
+
+
+ArrayLiteral = ArrayType "{" Expression { "," Expression } "}" .
+
+LiteralExpression = ( int_literal
+                    | bool_literal
+                    | string_literal
+                    | ArrayLiteral ) .
+
+PrefixExpression = unary_op Expression .
+
+InfixExpression  = Expression infix_op Expression .
+
+# used to prioritize evaluation
+# e.g. (1 + 2) * 3 where + is evaluated before *
+GroupExpression  = "(" Expression ")" .
+
+IndexExpression  = Expression "[" Expression "]" .
+
+# Notice: The only supported expressions (first expression in the rule)
+# are identifiers, as using functions as values is not supported at
+# this time. The grammar allows this but the parser implementation
+# enforces the restriction.
+CallExpression   = Expression "(" [ Expression { "," Expression } ] ")" .

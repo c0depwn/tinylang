@@ -1,0 +1,10 @@
+services:
+  ubuntu:
+    # Image provided by https://github.com/drujensen/riscv-ubuntu
+    image: drujensen/riscv-ubuntu:latest
+    platform: linux/riscv64
+    container_name: ubuntu
+    cap_add:
+      - SYS_PTRACE
+    volumes:
+      - ./workspace:/app
