@@ -50,16 +50,19 @@ type pseudoASM interface {
 	// StoreAtOffset stores the value in register "from"
 	// to the address base + offset.
 	StoreAtOffset(src, base Register, offset int)
+	StoreNAtOffset(s size, src, base Register, offset int)
 	// LoadImmediate loads the value into the dst Register.
 	LoadImmediate(dst Register, value int)
 	// LoadFromOffset loads the value at base + offset
 	// into register "dst".
 	LoadFromOffset(dst, base Register, offset int)
+	LoadNFromOffset(s size, dst, base Register, offset int)
 	// control flow
 
 	// BranchEQZ will take the branch if the specified register
 	// is equal to 0.
 	BranchEQZ(label string, a Register)
+	BranchEQ(label string, a, b Register)
 	// Jump to the specified label.
 	Jump(label string)
 	// Insert a label at the current position.
@@ -87,6 +90,15 @@ type pseudoASM interface {
 	Sub(dst, a, b Register)
 	Mul(dst, a, b Register)
 	Div(dst, a, b Register)
+	Mod(dst, a, b Register)
+
+	And(dst, a, b Register)
+	Or(dst, a, b Register)
+	XOr(dst, a, b Register)
+
+	ShiftL(dst, a, b Register)
+	ShiftR(dst, a, b Register)
+
 	LessThan(dst, a, b Register)
 	LessThanOrEqual(dst, a, b Register)
 	GreaterThan(dst, a, b Register)
@@ -171,6 +183,146 @@ func (p *commonRV) Insert(label string) {
 	p.emit(fmt.Sprintf("%s:", label))
 }
 
+func (p *commonRV) BranchEQ(label string, a, b Register) {
+	p.emit(fmt.Sprintf("beq %s, %s, %s", a, b, label))
+}
+
+func (p *commonRV) Add(dst, a, b Register) {
+	p.emit(fmt.Sprintf("add %s, %s, %s", dst, a, b))
+}
+
+func (p *commonRV) AddImmediate(rd, rs1 Register, imm int) {
+	p.emit(fmt.Sprintf("addi %s, %s, %d", rd, rs1, imm))
+}
+
+func (p *commonRV) Sub(dst, a, b Register) {
+	p.emit(fmt.Sprintf("sub %s, %s, %s", dst, a, b))
+}
+
+func (p *commonRV) Mul(dst, a, b Register) {
+	p.emit(fmt.Sprintf("mul %s, %s, %s", dst, a, b))
+}
+
+func (p *commonRV) Div(dst, a, b Register) {
+	p.emit(fmt.Sprintf("div %s, %s, %s", dst, a, b))
+}
+
+func (p *commonRV) Mod(dst, a, b Register) {
+	p.emit(fmt.Sprintf("rem %s, %s, %s", dst, a, b))
+}
+
+func (p *commonRV) Neg(dst, a Register) {
+	p.emit(fmt.Sprintf("sub %s, x0, %s", dst, a))
+}
+
+func (p *commonRV) And(dst, a, b Register) {
+	p.emit(fmt.Sprintf("and %s, %s, %s", dst, a, b))
+}
+
+func (p *commonRV) Or(dst, a, b Register) {
+	p.emit(fmt.Sprintf("or %s, %s, %s", dst, a, b))
+}
+
+func (p *commonRV) XOr(dst, a, b Register) {
+	p.emit(fmt.Sprintf("xor %s, %s, %s", dst, a, b))
+}
+
+func (p *commonRV) ShiftL(dst, a, b Register) {
+	p.emit(fmt.Sprintf("sll %s, %s, %s", dst, a, b))
+}
+
+func (p *commonRV) ShiftR(dst, a, b Register) {
+	p.emit(fmt.Sprintf("srl %s, %s, %s", dst, a, b))
+}
+
+func (p *commonRV) LessThan(dst, a, b Register) {
+	p.emit(fmt.Sprintf("slt %s, %s, %s", dst, a, b))
+}
+
+func (p *commonRV) LessThanOrEqual(dst, a, b Register) {
+	// a <= b is equivalent to !(b < a)
+
+	// b < a
+	p.emit(fmt.Sprintf("slt %s, %s, %s", dst, b, a))
+	// not using XOR
+	p.emit(fmt.Sprintf("xori %s, %s, 1", dst, dst))
+}
+
+func (p *commonRV) GreaterThan(dst, a, b Register) {
+	// less than flipped e.g. a > b <=> b < a
+	p.emit(fmt.Sprintf("slt %s, %s, %s", dst, b, a))
+}
+
+func (p *commonRV) GreaterThanOrEqual(dst, a, b Register) {
+	// a >= b is equivalent to !(a < b)
+
+	// a < b
+	p.emit(fmt.Sprintf("slt %s, %s, %s", dst, a, b))
+	// not using XOR
+	p.emit(fmt.Sprintf("xori %s, %s, 1", dst, dst))
+}
+
+func (p *commonRV) BranchEQZ(label string, a Register) {
+	p.emit(fmt.Sprintf("beq %s, x0, %s", a, label))
+}
+
+func (p *commonRV) Jump(label string) {
+	// JAL puts the return address in x0, which causes
+	// it to be ignored as x0 is wired to 0.
+	// This is fine as we don't care about the return
+	// address in this case.
+	p.emit(fmt.Sprintf("jal x0, %s", label))
+}
+
+func (p *commonRV) LoadDataAddress(label string, dst Register) {
+	p.emit(fmt.Sprintf("la %s, %s", dst, label))
+}
+
+func (p *commonRV) LoadImmediate(dst Register, value int) {
+	// TODO: bug: loading using load immediate is probably broken if the
+	//       value overflows a 12 bits (signed) int
+	p.emit(fmt.Sprintf("li %s, %d", dst, value))
+}
+
+func (p *commonRV) Move(rd, rs1 Register) {
+	p.emit(fmt.Sprintf("addi %s, %s, 0", rd, rs1))
+}
+
+type size int
+
+const (
+	sizeByte size = 1 << iota
+	sizeHalfWord
+	sizeWord
+	sizeDoubleWord
+)
+
+func (p *commonRV) StoreNAtOffset(s size, src, base Register, offset int) {
+	switch s {
+	case sizeByte:
+		p.emit(fmt.Sprintf("sb %s, %d(%s)", src, offset, base))
+	case sizeHalfWord:
+		p.emit(fmt.Sprintf("sh %s, %d(%s)", src, offset, base))
+	case sizeWord:
+		p.emit(fmt.Sprintf("sw %s, %d(%s)", src, offset, base))
+	case sizeDoubleWord:
+		p.emit(fmt.Sprintf("sd %s, %d(%s)", src, offset, base))
+	}
+}
+
+func (p *commonRV) LoadNFromOffset(s size, dst, base Register, offset int) {
+	switch s {
+	case sizeByte:
+		p.emit(fmt.Sprintf("lb %s, %d(%s)", dst, offset, base))
+	case sizeHalfWord:
+		p.emit(fmt.Sprintf("lh %s, %d(%s)", dst, offset, base))
+	case sizeWord:
+		p.emit(fmt.Sprintf("lw %s, %d(%s)", dst, offset, base))
+	case sizeDoubleWord:
+		p.emit(fmt.Sprintf("ld %s, %d(%s)", dst, offset, base))
+	}
+}
+
 func (p *commonRV) String() string {
 	sb := &strings.Builder{}
 
@@ -223,38 +375,12 @@ func newPseudoASM32Impl() *rv32PseudoASMImpl {
 	}
 }
 
-func (p *rv32PseudoASMImpl) LoadDataAddress(label string, dst Register) {
-	p.emit(fmt.Sprintf("la %s, %s", dst, label))
-}
-
-func (p *rv32PseudoASMImpl) Move(rd, rs1 Register) {
-	p.emit(fmt.Sprintf("addi %s, %s, 0", rd, rs1))
-}
-
 func (p *rv32PseudoASMImpl) StoreAtOffset(src, base Register, offset int) {
-	p.emit(fmt.Sprintf("sw %s, %d(%s)", src, offset, base))
-}
-
-func (p *rv32PseudoASMImpl) LoadImmediate(dst Register, value int) {
-	// TODO: bug: loading using load immediate is probably broken if the
-	//       value overflows a 12 bits (signed) int
-	p.emit(fmt.Sprintf("li %s, %d", dst, value))
+	p.StoreNAtOffset(sizeWord, src, base, offset)
 }
 
 func (p *rv32PseudoASMImpl) LoadFromOffset(dst, base Register, offset int) {
-	p.emit(fmt.Sprintf("lw %s, %d(%s) ", dst, offset, base))
-}
-
-func (p *rv32PseudoASMImpl) BranchEQZ(label string, a Register) {
-	p.emit(fmt.Sprintf("beq %s, x0, %s", a, label))
-}
-
-func (p *rv32PseudoASMImpl) Jump(label string) {
-	// JAL puts the return address in x0, which causes
-	// it to be ignored as x0 is wired to 0.
-	// This is fine as we don't care about the return
-	// address in this case.
-	p.emit(fmt.Sprintf("jal x0, %s", label))
+	p.LoadNFromOffset(sizeWord, dst, base, offset)
 }
 
 func (p *rv32PseudoASMImpl) Push(src Register) {
@@ -267,57 +393,6 @@ func (p *rv32PseudoASMImpl) Pop(dst Register) {
 	// p.DebugAddComment("pop")
 	p.emit(fmt.Sprintf("lw %s, 0(sp)", dst))
 	p.emit(fmt.Sprintf("addi sp, sp, 16"))
-}
-
-func (p *rv32PseudoASMImpl) AddImmediate(rd, rs1 Register, imm int) {
-	p.emit(fmt.Sprintf("addi %s, %s, %d", rd, rs1, imm))
-}
-
-func (p *rv32PseudoASMImpl) Add(dst, a, b Register) {
-	p.emit(fmt.Sprintf("add %s, %s, %s", dst, a, b))
-}
-
-func (p *rv32PseudoASMImpl) Sub(dst, a, b Register) {
-	p.emit(fmt.Sprintf("sub %s, %s, %s", dst, a, b))
-}
-
-func (p *rv32PseudoASMImpl) Mul(dst, a, b Register) {
-	p.emit(fmt.Sprintf("mul %s, %s, %s", dst, a, b))
-}
-
-func (p *rv32PseudoASMImpl) Div(dst, a, b Register) {
-	p.emit(fmt.Sprintf("div %s, %s, %s", dst, a, b))
-}
-
-func (p *rv32PseudoASMImpl) LessThan(dst, a, b Register) {
-	p.emit(fmt.Sprintf("slt %s, %s, %s", dst, a, b))
-}
-
-func (p *rv32PseudoASMImpl) LessThanOrEqual(dst, a, b Register) {
-	// a <= b is equivalent to !(b < a)
-
-	// b < a
-	p.emit(fmt.Sprintf("slt %s, %s, %s", dst, b, a))
-	// not using XOR
-	p.emit(fmt.Sprintf("xori %s, %s, 1", dst, dst))
-}
-
-func (p *rv32PseudoASMImpl) GreaterThan(dst, a, b Register) {
-	// less than flipped e.g. a > b <=> b < a
-	p.emit(fmt.Sprintf("slt %s, %s, %s", dst, b, a))
-}
-
-func (p *rv32PseudoASMImpl) GreaterThanOrEqual(dst, a, b Register) {
-	// a >= b is equivalent to !(a < b)
-
-	// a < b
-	p.emit(fmt.Sprintf("slt %s, %s, %s", dst, a, b))
-	// not using XOR
-	p.emit(fmt.Sprintf("xori %s, %s, 1", dst, dst))
-}
-
-func (p *rv32PseudoASMImpl) Neg(dst, a Register) {
-	p.emit(fmt.Sprintf("sub %s, x0, %s", dst, a))
 }
 
 type rv64PseudoASMImpl struct {
@@ -334,39 +409,12 @@ func newPseudoASM64Impl() *rv64PseudoASMImpl {
 	}
 }
 
-func (p *rv64PseudoASMImpl) LoadDataAddress(label string, dst Register) {
-	p.emit(fmt.Sprintf("la %s, %s", dst, label))
-}
-
-func (p *rv64PseudoASMImpl) Move(rd, rs1 Register) {
-	// p.emit(fmt.Sprintf("addi %s, %s, 0", rd, rs1))
-	p.emit(fmt.Sprintf("mv %s, %s", rd, rs1))
-}
-
 func (p *rv64PseudoASMImpl) StoreAtOffset(src, base Register, offset int) {
 	p.emit(fmt.Sprintf("sd %s, %d(%s)", src, offset, base))
 }
 
-func (p *rv64PseudoASMImpl) LoadImmediate(dst Register, value int) {
-	// TODO: bug: loading using load immediate is probably broken if the
-	//       value overflows a 12 bits (signed) int
-	p.emit(fmt.Sprintf("li %s, %d", dst, value))
-}
-
 func (p *rv64PseudoASMImpl) LoadFromOffset(dst, base Register, offset int) {
 	p.emit(fmt.Sprintf("ld %s, %d(%s) ", dst, offset, base))
-}
-
-func (p *rv64PseudoASMImpl) BranchEQZ(label string, a Register) {
-	p.emit(fmt.Sprintf("beq %s, x0, %s", a, label))
-}
-
-func (p *rv64PseudoASMImpl) Jump(label string) {
-	// JAL puts the return address in x0, which causes
-	// it to be ignored as x0 is wired to 0.
-	// This is fine as we don't care about the return
-	// address in this case.
-	p.emit(fmt.Sprintf("jal x0, %s", label))
 }
 
 func (p *rv64PseudoASMImpl) Push(src Register) {
@@ -377,55 +425,4 @@ func (p *rv64PseudoASMImpl) Push(src Register) {
 func (p *rv64PseudoASMImpl) Pop(dst Register) {
 	p.emit(fmt.Sprintf("ld %s, 0(sp)", dst))
 	p.emit(fmt.Sprintf("addi sp, sp, 16"))
-}
-
-func (p *rv64PseudoASMImpl) AddImmediate(rd, rs1 Register, imm int) {
-	p.emit(fmt.Sprintf("addi %s, %s, %d", rd, rs1, imm))
-}
-
-func (p *rv64PseudoASMImpl) Add(dst, a, b Register) {
-	p.emit(fmt.Sprintf("add %s, %s, %s", dst, a, b))
-}
-
-func (p *rv64PseudoASMImpl) Sub(dst, a, b Register) {
-	p.emit(fmt.Sprintf("sub %s, %s, %s", dst, a, b))
-}
-
-func (p *rv64PseudoASMImpl) Mul(dst, a, b Register) {
-	p.emit(fmt.Sprintf("mul %s, %s, %s", dst, a, b))
-}
-
-func (p *rv64PseudoASMImpl) Div(dst, a, b Register) {
-	p.emit(fmt.Sprintf("div %s, %s, %s", dst, a, b))
-}
-
-func (p *rv64PseudoASMImpl) LessThan(dst, a, b Register) {
-	p.emit(fmt.Sprintf("slt %s, %s, %s", dst, a, b))
-}
-
-func (p *rv64PseudoASMImpl) LessThanOrEqual(dst, a, b Register) {
-	// a <= b is equivalent to !(b < a)
-
-	// b < a
-	p.emit(fmt.Sprintf("slt %s, %s, %s", dst, b, a))
-	// not using XOR
-	p.emit(fmt.Sprintf("xori %s, %s, 1", dst, dst))
-}
-
-func (p *rv64PseudoASMImpl) GreaterThan(dst, a, b Register) {
-	// less than flipped e.g. a > b <=> b < a
-	p.emit(fmt.Sprintf("slt %s, %s, %s", dst, b, a))
-}
-
-func (p *rv64PseudoASMImpl) GreaterThanOrEqual(dst, a, b Register) {
-	// a >= b is equivalent to !(a < b)
-
-	// a < b
-	p.emit(fmt.Sprintf("slt %s, %s, %s", dst, a, b))
-	// not using XOR
-	p.emit(fmt.Sprintf("xori %s, %s, 1", dst, dst))
-}
-
-func (p *rv64PseudoASMImpl) Neg(dst, a Register) {
-	p.emit(fmt.Sprintf("sub %s, x0, %s", dst, a))
 }
