@@ -572,6 +572,15 @@ func (g *Generator) infixExpression(infix *ast.InfixExpression) Register {
 		g.asm.Mul(resultRightReg, leftValReg, resultRightReg)
 	case "/":
 		g.asm.Div(resultRightReg, leftValReg, resultRightReg)
+	case "%":
+		g.asm.Mod(resultRightReg, leftValReg, resultRightReg)
+	case "==":
+		// TODO: improvement: type based equality
+		eq := g.env.provideLabel()
+		g.asm.BranchEQ(eq, leftValReg, resultRightReg)
+		g.asm.LoadImmediate(resultRightReg, 0)
+		g.asm.Insert(eq)
+		g.asm.LoadImmediate(resultRightReg, 1)
 	case "<":
 		g.asm.LessThan(resultRightReg, leftValReg, resultRightReg)
 	case "<=":
@@ -580,6 +589,20 @@ func (g *Generator) infixExpression(infix *ast.InfixExpression) Register {
 		g.asm.GreaterThan(resultRightReg, leftValReg, resultRightReg)
 	case ">=":
 		g.asm.GreaterThanOrEqual(resultRightReg, leftValReg, resultRightReg)
+	case "&&":
+		g.asm.And(resultRightReg, leftValReg, resultRightReg)
+	case "||":
+		g.asm.Or(resultRightReg, leftValReg, resultRightReg)
+	case "<<":
+		g.asm.ShiftL(resultRightReg, leftValReg, resultRightReg)
+	case ">>":
+		g.asm.ShiftR(resultRightReg, leftValReg, resultRightReg)
+	case "&":
+		g.asm.And(resultRightReg, leftValReg, resultRightReg)
+	case "|":
+		g.asm.Or(resultRightReg, leftValReg, resultRightReg)
+	case "^":
+		g.asm.XOr(resultRightReg, leftValReg, resultRightReg)
 	default:
 		panic(fmt.Errorf("infix operator '%s' not implemented", infix.Operator))
 	}
