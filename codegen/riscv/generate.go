@@ -31,7 +31,6 @@ func WithPlatform(platform PlatformID) GeneratorOptions {
 		default:
 			panic(fmt.Sprintf("unknown platform %v", platform))
 		}
-
 	}
 }
 
@@ -78,8 +77,6 @@ func Generate(file *ast.File, out io.Writer, opts ...GeneratorOptions) error {
 
 	specificGen := fromTarget(g.target)
 	pseudoasm, err := specificGen.exec(g, file)
-
-	// pseudoasm, err := g.exec(file)
 	if err != nil {
 		return err
 	}
@@ -143,7 +140,7 @@ func (g *Generator) statement(statement ast.Statement) {
 		g.returnStatement(s)
 	case *ast.ExpressionStatement:
 		// expression statements simply ignore the result of the expression
-		resultReg := g.expression(s.Expression)
+		resultReg, _ := g.expression(s.Expression)
 		g.registers.free(resultReg)
 	default:
 		panic(fmt.Errorf("unsupported statement type: %T", statement))
@@ -168,10 +165,11 @@ func (g *Generator) varDeclaration(declaration *ast.VarDeclaration) {
 	// If there is no initialisation, implicitly set the value to 0 using the x0 register,
 	// This ensures that there is always a valid 'zero value' for uninitialized vars.
 	var resultRegister Register
+	var sizeOfResult size
 
 	// compile the expression if there is one
 	if declaration.Expression != nil {
-		resultRegister = g.expression(declaration.Expression)
+		resultRegister, sizeOfResult = g.expression(declaration.Expression)
 
 		// dereference pointer (e.g. *T -> T)
 		if types.IsPointer(declaration.Expression.Type()) {
@@ -181,11 +179,34 @@ func (g *Generator) varDeclaration(declaration *ast.VarDeclaration) {
 
 		defer g.registers.free(resultRegister)
 	} else {
+
+		resultRegister = g.registers.allocTemp()
+		defer g.registers.free(resultRegister)
+
+		if arrT, ok := declaration.Type().(types.Array); ok {
+			g.allocEmptyArray(arrT)
+			g.asm.Pop(resultRegister)
+		}
+		if strT, ok := declaration.Type().(types.String); ok {
+			// allocate size field + len
+			g.asm.LoadImmediate(a0, g.platform.RegisterSize())
+			g.asm.Call(internalMalloc)
+
+			// save the length of the string (this is always 0)
+			temp := g.registers.allocTemp()
+			g.asm.AddImmediate(temp, x0, int(strT.Length))
+			g.asm.StoreAtOffset(temp, a0, 0)
+			g.registers.free(temp)
+
+			// save addr of allocated string in result reg
+			g.asm.Move(resultRegister, a0)
+		}
+
 		// x0 is always 0
 		resultRegister = x0
 	}
 
-	g.writeTo(declaration.Identifier, resultRegister)
+	g.writeTo(declaration.Identifier, resultRegister, sizeOfResult)
 }
 
 // constDeclaration generates code for a constant declaration and
@@ -196,10 +217,10 @@ func (g *Generator) varDeclaration(declaration *ast.VarDeclaration) {
 //
 //	be hard coded into the .BSS or .DATA section directly at comp-time.
 func (g *Generator) constDeclaration(declaration *ast.ConstDeclaration) {
-	resultRegister := g.expression(declaration.Expression)
+	resultRegister, sizeOfResult := g.expression(declaration.Expression)
 	defer g.registers.free(resultRegister)
 
-	g.writeTo(declaration.Identifier, resultRegister)
+	g.writeTo(declaration.Identifier, resultRegister, sizeOfResult)
 }
 
 // TODO: improvement: more than 8 func params are not supported
@@ -306,9 +327,7 @@ func (g *Generator) fnDeclaration(declaration *ast.FuncDeclaration) {
 	g.block(declaration.Body)
 
 	// insert label which can be used to jump to from return statements
-	if !declaration.T.(types.Function).Result.Equals(types.NewVoid()) {
-		g.asm.Insert(fmt.Sprintf("ret_%s", declaration.Name()))
-	}
+	g.asm.Insert(fmt.Sprintf("ret_%s", declaration.Name()))
 
 	// After the function, the "function epilogue" is needed to restore
 	// the callee-saved registers to their original state.
@@ -333,7 +352,7 @@ func (g *Generator) fnDeclaration(declaration *ast.FuncDeclaration) {
 // encountered for index based array access.
 func (g *Generator) assignment(assignment *ast.Assignment) {
 	// evaluate the value of the assignment
-	resultValueReg := g.expression(assignment.Value)
+	resultValueReg, sizeOfResult := g.expression(assignment.Value)
 	defer func() { g.registers.free(resultValueReg) }()
 
 	// The result can either be a pointer to a value or a value.
@@ -358,8 +377,8 @@ func (g *Generator) assignment(assignment *ast.Assignment) {
 			panic(fmt.Errorf("left side of assignment is '%T', expected index expression", assignment.Left))
 		}
 
-		addrRegister := g.indexExpression(indexExpr)
-		g.asm.StoreAtOffset(resultValueReg, addrRegister, 0)
+		addrRegister, sizeOfResult := g.indexExpression(indexExpr)
+		g.asm.StoreNAtOffset(sizeOfResult, resultValueReg, addrRegister, 0)
 		g.registers.free(addrRegister)
 	} else {
 		// In this case, the left side must be an identifier.
@@ -367,7 +386,7 @@ func (g *Generator) assignment(assignment *ast.Assignment) {
 		if !ok {
 			panic(fmt.Errorf("left side of assignment is '%T', expected identifier", assignment.Left))
 		}
-		g.writeTo(ident, resultValueReg)
+		g.writeTo(ident, resultValueReg, sizeOfResult)
 	}
 }
 
@@ -375,7 +394,8 @@ func (g *Generator) ifStatement(ifStatement *ast.IfStatement) {
 	lFalse := g.env.provideLabel()
 	lAfter := g.env.provideLabel()
 
-	condResReg := g.expression(ifStatement.Condition)
+	// ignore result size because it's always a bool
+	condResReg, _ := g.expression(ifStatement.Condition)
 
 	// jump to false block if condResReg contains false (aka 0)
 	g.asm.BranchEQZ(lFalse, condResReg)
@@ -408,8 +428,8 @@ func (g *Generator) whileStatement(whileStatement *ast.WhileStatement) {
 	// mark start of loop
 	g.asm.Insert(loopStart)
 
-	// evaluate condition
-	condResReg := g.expression(whileStatement.Condition)
+	// evaluate condition, ignore size cause its always bool
+	condResReg, _ := g.expression(whileStatement.Condition)
 
 	// jump past loop if the result is false
 	g.asm.BranchEQZ(loopEnd, condResReg)
@@ -430,7 +450,7 @@ func (g *Generator) whileStatement(whileStatement *ast.WhileStatement) {
 // jumping to the functions return label (ret_<FUNC_NAME>).
 func (g *Generator) returnStatement(returnStatement *ast.ReturnStatement) {
 	if returnStatement.Expression != nil {
-		resultReg := g.expression(returnStatement.Expression)
+		resultReg, _ := g.expression(returnStatement.Expression)
 
 		// return values are passed through a0 and a1
 		g.asm.Move(a0, resultReg)
@@ -443,12 +463,12 @@ func (g *Generator) returnStatement(returnStatement *ast.ReturnStatement) {
 
 // expression is dynamically dispatches the code generation function
 // for an [ast.Expression].
-func (g *Generator) expression(expression ast.Expression) Register {
+func (g *Generator) expression(expression ast.Expression) (Register, size) {
 	switch e := expression.(type) {
 	case *ast.BasicLiteral:
 		return g.basicLiteralExpression(e)
 	case *ast.ArrayLiteral:
-		return g.arrayLiteralExpression(e)
+		return g.arrayLiteralExpression(e), size(g.platform.RegisterSize())
 	case *ast.Identifier:
 		return g.identifier(e)
 	case *ast.PrefixExpression:
@@ -476,7 +496,7 @@ func (g *Generator) expression(expression ast.Expression) Register {
 	}
 }
 
-func (g *Generator) basicLiteralExpression(expr *ast.BasicLiteral) Register {
+func (g *Generator) basicLiteralExpression(expr *ast.BasicLiteral) (Register, size) {
 	// It is safe to use a temporary register as this is a single
 	// expression which does not call any functions.
 	// The register will not be clobbered.
@@ -487,19 +507,19 @@ func (g *Generator) basicLiteralExpression(expr *ast.BasicLiteral) Register {
 	switch val.Type() {
 	case constant.Bool:
 		// 1 = true, 0 = false
-		if constant.AsBool(val) {
+		if b, _ := constant.AsBool(val); b {
 			g.asm.LoadImmediate(targetReg, 1)
 		} else {
 			g.asm.LoadImmediate(targetReg, 0)
 		}
 	case constant.Int:
-		i := constant.AsInt(val)
+		i, _ := constant.AsInt(val)
 		g.asm.LoadImmediate(targetReg, i)
 	case constant.String:
 		v, _ := constant.As[string](val)
 
 		// allocate memory
-		g.asm.LoadImmediate(a0, len(v))
+		g.asm.LoadImmediate(a0, len(v)+g.platform.RegisterSize())
 		g.asm.Call(internalMalloc)
 		g.asm.Move(targetReg, a0)
 
@@ -510,25 +530,25 @@ func (g *Generator) basicLiteralExpression(expr *ast.BasicLiteral) Register {
 		g.asm.StoreAtOffset(dataTransferReg, targetReg, 0)
 
 		// place each string character into allocated memory
-		for idx := range v {
-			c := v[idx]
+		offsetFromTargetAddr := g.platform.RegisterSize()
+		for charIdx := range v {
+			c := v[charIdx]
 			g.asm.LoadImmediate(dataTransferReg, int(c))
-			g.asm.StoreAtOffset(dataTransferReg, targetReg, idx+1)
+			g.asm.StoreNAtOffset(sizeByte, dataTransferReg, targetReg, charIdx+offsetFromTargetAddr)
 		}
 
 		g.registers.free(dataTransferReg)
-
 	default:
 		panic(fmt.Errorf("unsupported basic literal type: %T", val))
 	}
 
-	return targetReg
+	return targetReg, size(g.platform.SizeOf(expr.Type()))
 }
 
 // prefixExpression generates code to evaluate a [*ast.PrefixExpression].
 // The result will be in the returned Register.
-func (g *Generator) prefixExpression(prefix *ast.PrefixExpression) Register {
-	resultRegister := g.expression(prefix.Right)
+func (g *Generator) prefixExpression(prefix *ast.PrefixExpression) (Register, size) {
+	resultRegister, sizeOfResult := g.expression(prefix.Right)
 
 	// execute operator on whatever is in a0
 	switch prefix.Operator {
@@ -538,14 +558,14 @@ func (g *Generator) prefixExpression(prefix *ast.PrefixExpression) Register {
 		panic(fmt.Errorf("prefix operator '%s' not implemented", prefix.Operator))
 	}
 
-	return resultRegister
+	return resultRegister, sizeOfResult
 }
 
 // infixExpression generates code to evaluate an [*ast.InfixExpression].
 // The result is stored in the returned Register.
-func (g *Generator) infixExpression(infix *ast.InfixExpression) Register {
+func (g *Generator) infixExpression(infix *ast.InfixExpression) (Register, size) {
 	// evaluate and store the result of the left expression on the stack
-	resultLeftReg := g.expression(infix.Left)
+	resultLeftReg, _ := g.expression(infix.Left)
 	// dereference pointer
 	if types.IsPointer(infix.Left.Type()) {
 		g.asm.LoadFromOffset(resultLeftReg, resultLeftReg, 0)
@@ -554,7 +574,7 @@ func (g *Generator) infixExpression(infix *ast.InfixExpression) Register {
 	g.registers.free(resultLeftReg)
 
 	// evaluate the right expression
-	resultRightReg := g.expression(infix.Right)
+	resultRightReg, _ := g.expression(infix.Right)
 	if types.IsPointer(infix.Right.Type()) {
 		g.asm.LoadFromOffset(resultRightReg, resultRightReg, 0)
 	}
@@ -576,11 +596,9 @@ func (g *Generator) infixExpression(infix *ast.InfixExpression) Register {
 		g.asm.Mod(resultRightReg, leftValReg, resultRightReg)
 	case "==":
 		// TODO: improvement: type based equality
-		eq := g.env.provideLabel()
-		g.asm.BranchEQ(eq, leftValReg, resultRightReg)
-		g.asm.LoadImmediate(resultRightReg, 0)
-		g.asm.Insert(eq)
-		g.asm.LoadImmediate(resultRightReg, 1)
+		// if l - r is 0, set result = 1
+		g.asm.Sub(resultRightReg, leftValReg, resultRightReg)
+		g.asm.SetEqualZero(resultRightReg, resultRightReg)
 	case "<":
 		g.asm.LessThan(resultRightReg, leftValReg, resultRightReg)
 	case "<=":
@@ -609,23 +627,24 @@ func (g *Generator) infixExpression(infix *ast.InfixExpression) Register {
 
 	g.registers.free(leftValReg)
 
-	return resultRightReg
+	return resultRightReg, size(g.platform.SizeOf(infix.Type()))
 }
 
 // identifier generates the code to look up and load the value of the supplied
 // identifier into the returned register.
-func (g *Generator) identifier(ident *ast.Identifier) Register {
+func (g *Generator) identifier(ident *ast.Identifier) (Register, size) {
 	tempReg1 := g.registers.allocTemp()
+	sizeOfIdent := size(g.platform.SizeOf(ident.Type()))
 
 	scope, _ := g.symbols.Find(ident.Name)
 	if symbols.IsGlobal(scope) {
 		g.asm.LoadDataAddress(ident.Name, tempReg1)
-		g.asm.LoadFromOffset(tempReg1, tempReg1, 0)
+		g.asm.LoadNFromOffset(sizeOfIdent, tempReg1, tempReg1, 0)
 	} else {
-		g.asm.LoadFromOffset(tempReg1, s0, g.env.lookup(ident.Name))
+		g.asm.LoadNFromOffset(sizeOfIdent, tempReg1, s0, g.env.lookup(ident.Name))
 	}
 
-	return tempReg1
+	return tempReg1, sizeOfIdent
 }
 
 // arrayLiteralExpression generates code for the supplied [*ast.ArrayLiteral].
@@ -637,10 +656,13 @@ func (g *Generator) arrayLiteralExpression(expr *ast.ArrayLiteral) Register {
 	//        +--------+-------+-----
 	// ptr -> | length | elem1 | ...
 	//        +--------+-------+-----
-	//
-	// This is okay because currently pointers and primitives are always the
-	// same size as a register.
-	size := g.platform.RegisterSize() + (g.platform.RegisterSize() * len(expr.Elements))
+
+	arr, ok := expr.Type().(types.Array)
+	if !ok {
+		panic(fmt.Errorf("array literal not an array"))
+	}
+
+	size := g.platform.RegisterSize() + (g.platform.SizeOf(arr.Element) * len(expr.Elements))
 
 	// allocate memory for the array through built-in malloc and save the returned
 	// pointer on the stack
@@ -664,7 +686,7 @@ func (g *Generator) arrayLiteralExpression(expr *ast.ArrayLiteral) Register {
 	for idx, elem := range expr.Elements {
 		// evaluate the elements expression and save the
 		// result into the next slot of the allocated memory
-		elemResultRegister := g.expression(elem)
+		elemResultRegister, sizeOfElem := g.expression(elem)
 
 		// pop the pointer to the array off the stack
 		// g.asm.DebugAddComment("get array ptr from stack")
@@ -676,7 +698,8 @@ func (g *Generator) arrayLiteralExpression(expr *ast.ArrayLiteral) Register {
 		lenSize := g.platform.SizeOf(types.NewInt())
 
 		// length of the array is stored at offset 0
-		g.asm.StoreAtOffset(elemResultRegister, baseAddrReg, lenSize+(elemSize*idx))
+		//g.asm.StoreAtOffset(elemResultRegister, baseAddrReg, lenSize+(elemSize*idx))
+		g.asm.StoreNAtOffset(sizeOfElem, elemResultRegister, baseAddrReg, lenSize+(elemSize*idx))
 
 		// push the address back onto the stack
 		// g.asm.DebugAddComment("push array ptr to stack")
@@ -699,11 +722,11 @@ func (g *Generator) arrayLiteralExpression(expr *ast.ArrayLiteral) Register {
 // Additionally, bounds checking is implemented for each array access.
 //
 //	TODO: improvement: bounds checking on array access.
-func (g *Generator) indexExpression(expr *ast.IndexExpression) Register {
+func (g *Generator) indexExpression(expr *ast.IndexExpression) (Register, size) {
 	// evaluate the left hand side of the expression and save the result on the stack.
 	// This ensures that the register is not clobbered by the evaluation of the index expression.
 	// g.asm.DebugAddComment("eval left side of index expression")
-	arrayAddrReg := g.expression(expr.Left)
+	arrayAddrReg, _ := g.expression(expr.Left)
 
 	// When dealing with multiple dimensions Left might contain another ast.IndexExpression.
 	// e.g. a 2D array (arr [][]int), accessed by arr[0] will result in *[]T therefore,
@@ -717,7 +740,8 @@ func (g *Generator) indexExpression(expr *ast.IndexExpression) Register {
 	g.asm.Push(arrayAddrReg)
 	g.registers.free(arrayAddrReg)
 
-	arrayIndexReg := g.expression(expr.Index)
+	// ignore size, index is always int
+	arrayIndexReg, _ := g.expression(expr.Index)
 
 	// allocate a new temporary register to pop the array pointer back into
 	arrayAddrReg = g.registers.allocTemp()
@@ -739,10 +763,10 @@ func (g *Generator) indexExpression(expr *ast.IndexExpression) Register {
 	g.registers.free(arrayIndexReg)
 	g.registers.free(elemSizeReg)
 
-	return arrayAddrReg
+	return arrayAddrReg, size(g.platform.SizeOf(expr.Type().Underlying()))
 }
 
-func (g *Generator) callExpression(expr *ast.CallExpression) Register {
+func (g *Generator) callExpression(expr *ast.CallExpression) (Register, size) {
 	if len(expr.Arguments) > 8 {
 		panic(fmt.Errorf("passing more than 8 arguments is currently not supported"))
 	}
@@ -752,12 +776,16 @@ func (g *Generator) callExpression(expr *ast.CallExpression) Register {
 		builtInFunc.rewriteCall(expr)
 	}
 
-	for _, argExpr := range expr.Arguments {
-		argReg := g.expression(argExpr)
+	// backwards due to stack
+	for i := len(expr.Arguments) - 1; i >= 0; i-- {
+		argExpr := expr.Arguments[i]
+
+		argReg, argSize := g.expression(argExpr)
 
 		// deref if necessary (e.g. x[0] is a ptr to elem, we want the elem)
 		if types.IsPointer(argExpr.Type()) {
-			g.asm.LoadFromOffset(argReg, argReg, 0)
+			//g.asm.LoadFromOffset(argReg, argReg, 0)
+			g.asm.LoadNFromOffset(argSize, argReg, argReg, 0)
 		}
 
 		// Save onto stack to avoid clobbering through function arguments.
@@ -771,7 +799,7 @@ func (g *Generator) callExpression(expr *ast.CallExpression) Register {
 	}
 
 	// place expression results in a0...a7
-	for idx := range expr.Arguments {
+	for idx := 0; idx < len(expr.Arguments); idx++ {
 		g.asm.Pop(argRegisters[idx])
 	}
 
@@ -780,15 +808,15 @@ func (g *Generator) callExpression(expr *ast.CallExpression) Register {
 
 	// function result
 	if expr.Type().Equals(types.NewVoid()) {
-		return x0 // no return value
+		return x0, size(g.platform.RegisterSize()) // no return value
 	} else {
-		return a0 // default return register
+		return a0, size(g.platform.SizeOf(expr.Type())) // default return register
 	}
 }
 
 // writeTo writes the value of the supplied "from" Register to
 // the address of the identifier.
-func (g *Generator) writeTo(identifier *ast.Identifier, from Register) {
+func (g *Generator) writeTo(identifier *ast.Identifier, from Register, sizeOfSource size) {
 	declScope, decl := g.symbols.Find(identifier.Name)
 	if decl == nil {
 		panic(fmt.Errorf("could not find declaration of %v", identifier.Name))
@@ -799,7 +827,7 @@ func (g *Generator) writeTo(identifier *ast.Identifier, from Register) {
 		// decl is global and located in the .data section
 		tempReg := g.registers.allocTemp()
 		g.asm.LoadDataAddress(decl.Name(), tempReg)
-		g.asm.StoreAtOffset(from, tempReg, 0)
+		g.asm.StoreNAtOffset(sizeOfSource, from, tempReg, 0)
 		g.registers.free(tempReg)
 	} else {
 		// decl is local and stack allocated
@@ -808,10 +836,70 @@ func (g *Generator) writeTo(identifier *ast.Identifier, from Register) {
 	}
 }
 
+// allocArray allocates space for an array
+// dst is the register which will contain the address of the array
+func (g *Generator) allocEmptyArray(arrT types.Array) {
+	size := g.platform.RegisterSize() + (g.platform.SizeOf(arrT.Element) * int(arrT.Length))
+
+	// allocate size field + len
+	g.asm.LoadImmediate(a0, size)
+	g.asm.Call(internalMalloc)
+
+	// save the length of the array
+	temp := g.registers.allocTemp()
+	g.asm.AddImmediate(temp, x0, int(arrT.Length))
+	g.asm.StoreAtOffset(temp, a0, 0)
+	g.registers.free(temp)
+
+	// save addr of allocated array on the stack
+	g.asm.Push(a0)
+
+	switch t := arrT.Element.(type) {
+	case types.Array:
+		sizeOfElem := g.platform.SizeOf(arrT.Element)
+		for i := 0; i < int(arrT.Length); i++ {
+			g.allocEmptyArray(t)
+
+			dstArrAddr := g.registers.allocTemp()
+			g.asm.Pop(dstArrAddr)
+
+			originalArrAddr := g.registers.allocTemp()
+			g.asm.Pop(originalArrAddr)
+
+			g.asm.StoreAtOffset(dstArrAddr, originalArrAddr, i*sizeOfElem+g.platform.RegisterSize())
+
+			g.asm.Push(originalArrAddr)
+
+			g.registers.free(originalArrAddr)
+			g.registers.free(dstArrAddr)
+		}
+	case types.String:
+		// allocating empty strings would be possible
+		// but is not doing much at the moment as
+		// they are immutable
+		return
+	default:
+		// non-heap allocated data types do not need
+		// pre-allocation, it is assumed that 0x0 is a
+		// valid default value for those types
+		return
+	}
+}
+
 func emitInt(p Platform, v int) emitData {
-	return emitData{
-		kind:  dataEmitDirective(fmt.Sprintf(".%dbyte", p.RegisterSize())),
-		value: fmt.Sprintf("%d", v),
+	switch p.RegisterSize() {
+	case 4:
+		return emitData{
+			kind:  ".word",
+			value: fmt.Sprintf("%d", v),
+		}
+	case 8:
+		return emitData{
+			kind:  ".dword",
+			value: fmt.Sprintf("%d", v),
+		}
+	default:
+		panic(fmt.Errorf("unknown register size %d", p.RegisterSize()))
 	}
 }
 
@@ -833,10 +921,11 @@ func emitZero(p Platform, decl ast.Declaration) emitData {
 func emitConst(p Platform, c ast.ConstExpression) emitData {
 	switch c.Type().(type) {
 	case types.Int:
-		return emitInt(p, constant.AsInt(c.Value()))
+		intVal, _ := constant.AsInt(c.Value())
+		return emitInt(p, intVal)
 	case types.Bool:
 		v := 0
-		if constant.AsBool(c.Value()) {
+		if b, _ := constant.AsBool(c.Value()); b {
 			v = 1
 		}
 		return emitInt(p, v)

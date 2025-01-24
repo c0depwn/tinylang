@@ -3,6 +3,7 @@ package types
 import (
 	"fmt"
 	"github.com/c0depwn/tinylang/ast"
+	"github.com/c0depwn/tinylang/constant"
 	ext "github.com/c0depwn/tinylang/pkg/slices"
 	"github.com/c0depwn/tinylang/token"
 	"io"
@@ -55,6 +56,10 @@ func Analyze(f *ast.File, symbolInfo Symbols, opts ...AnalyzeOption) error {
 		provideBuiltInLen(),
 		provideBuiltInPrint(),
 		provideBuiltInPrintLn(),
+		provideBuiltInByte(),
+		provideBuiltInInt(),
+		provideBuiltInString(),
+		provideBuiltInRead(),
 	)
 
 	// First, type information of declared functions must be
@@ -94,6 +99,9 @@ func Analyze(f *ast.File, symbolInfo Symbols, opts ...AnalyzeOption) error {
 	typeChecker := makeChecker(symbolInfo)
 	var err error
 
+	var ctxStack []parentCtx
+	ctxStack = append(ctxStack, parentCtx{node: nil})
+
 	// Finally, traverse everything propagating types upwards and
 	// checking types post-traversal.
 	// In case of var/const declarations, the expression is traversed.
@@ -110,6 +118,11 @@ func Analyze(f *ast.File, symbolInfo Symbols, opts ...AnalyzeOption) error {
 			// debugging
 			options.tracer.post(n)
 
+			// pop ctx type check
+			if typeChecker.shouldResetParentTypeContext(n) {
+				ctxStack = ctxStack[0 : len(ctxStack)-1]
+			}
+
 			// The type checking is done once node traversal has
 			// completed as the type information of child nodes
 			// is only available post traversal.
@@ -122,8 +135,10 @@ func Analyze(f *ast.File, symbolInfo Symbols, opts ...AnalyzeOption) error {
 		options.tracer.pre(n)
 		// add to traversal state
 		typeChecker.push(n)
+		// set context if node is context relevant
+		ctxStack = typeChecker.setParentTypeContext(n, ctxStack)
 		// propagate type information of node to parents
-		typeChecker.propagate(n)
+		err = typeChecker.propagate(n, ctxStack[len(ctxStack)-1])
 
 		return true
 	})
@@ -178,7 +193,44 @@ func (c checker) pop() ast.Node {
 	return popped
 }
 
-func (c checker) propagate(n ast.Node) {
+type parentCtx struct {
+	node ast.Node
+	t    ast.Type
+}
+
+func (c checker) setParentTypeContext(node ast.Node, ctxStack []parentCtx) []parentCtx {
+	// set the var/array lit type and return it
+	// so children can use it during pre-traversal as a
+	// hint for the type conversion
+	switch node := node.(type) {
+	case *ast.VarDeclaration:
+		node.T = FromTypeIdentifier(node.TypeName)
+		return append(ctxStack, parentCtx{node, node.T})
+	case *ast.ConstDeclaration:
+		node.T = FromTypeIdentifier(node.TypeName)
+		return append(ctxStack, parentCtx{node, node.T})
+	case *ast.ArrayLiteral:
+		return append(ctxStack, parentCtx{node, FromTypeIdentifier(node.TypeID)})
+	}
+	return ctxStack
+}
+
+func (c checker) shouldResetParentTypeContext(node ast.Node) bool {
+	// set the var/array lit type and return it
+	// so children can use it during pre-traversal as a
+	// hint for the type conversion
+	switch node.(type) {
+	case *ast.VarDeclaration:
+		return true
+	case *ast.ConstDeclaration:
+		return true
+	case *ast.ArrayLiteral:
+		return true
+	}
+	return false
+}
+
+func (c checker) propagate(n ast.Node, ctx parentCtx) error {
 	// Leaf nodes do not need their types checked but rather
 	// propagate type information upwards in the AST.
 	switch node := n.(type) {
@@ -191,7 +243,11 @@ func (c checker) propagate(n ast.Node) {
 		node.T = FromTypeIdentifier(node.TypeName)
 
 	case *ast.BasicLiteral:
-		node.T = FromConstant(node.Value())
+		t, err := constTypeCreationFunc(ctx)(node.Value())
+		if err != nil {
+			return err
+		}
+		node.T = t
 
 	// ast.Param is excluded from this because it has already
 	// been annotated with its type during the global func decl pass.
@@ -199,10 +255,10 @@ func (c checker) propagate(n ast.Node) {
 
 	case *ast.Identifier:
 		if slices.ContainsFunc(builtInFuncs, byIdentifier(node)) {
-			return
+			return nil
 		}
 		if token.IsReservedKeyword(node.Name) {
-			return
+			return nil
 		}
 
 		d := c.symbols.FindInScope(node.Name)
@@ -214,6 +270,8 @@ func (c checker) propagate(n ast.Node) {
 		}
 		node.T = d.Type()
 	}
+
+	return nil
 }
 
 // checkDispatch dynamically calls the type checking function
@@ -458,18 +516,19 @@ func (c checker) checkArrayLiteral(array *ast.ArrayLiteral) error {
 
 	// The literal must not necessarily contain the number of elements
 	// defined by its type (e.g. [2]int{} is allowed).
-	if literalArrType.Length < uint32(len(array.Elements)) {
+	if literalArrType.Length < uint(len(array.Elements)) {
 		return c.wrap(array.Position(), newTypeError(arrayLitErrTooManyElements))
 	}
 
 	// Ensure that the array literals elements match the defined type.
 	for i, element := range array.Elements {
-		if !element.Type().Equals(literalArrType.Element) {
-			tErr := newTypeError(fmt.Sprintf(arrayLitErrIncorrectElementTypeFmt, i)).
-				WithExpect(literalArrType.Element).
-				WithActual(element.Type())
-			return c.wrap(array.Position(), tErr)
+		if element.Type().Equals(literalArrType.Element) {
+			continue
 		}
+		tErr := newTypeError(fmt.Sprintf(arrayLitErrIncorrectElementTypeFmt, i)).
+			WithExpect(literalArrType.Element).
+			WithActual(element.Type())
+		return c.wrap(array.Position(), tErr)
 	}
 
 	array.T = literalType
@@ -631,5 +690,56 @@ func forEach[T ast.Declaration](ds []ast.Declaration, f func(T)) {
 		if specific, ok := d.(T); ok {
 			f(specific)
 		}
+	}
+}
+
+func constTypeCreationFunc(ctx parentCtx) func(c constant.Value) (ast.Type, error) {
+	if ctx.node == nil {
+		return func(c constant.Value) (ast.Type, error) { return FromConstant(c), nil }
+	}
+
+	switch ctxType := ctx.t.(type) {
+	case Bool:
+		return func(c constant.Value) (ast.Type, error) {
+			if _, err := constant.AsBool(c); err != nil {
+				return nil, newTypeError("unexpected literal type").
+					WithExpect(Bool{}).
+					WithActual(FromConstant(c))
+			}
+			return Bool{}, nil
+		}
+	case Byte:
+		return func(c constant.Value) (ast.Type, error) {
+			if _, err := constant.AsByte(c); err != nil {
+				return nil, newTypeError(fmt.Sprintf("unexpected literal type: %v", err)).
+					WithExpect(Byte{}).
+					WithActual(FromConstant(c))
+			}
+			return Byte{}, nil
+		}
+	case Int:
+		return func(c constant.Value) (ast.Type, error) {
+			if _, err := constant.AsInt(c); err != nil {
+				return nil, newTypeError("unexpected literal type").
+					WithExpect(Int{}).
+					WithActual(FromConstant(c))
+			}
+			return Int{}, nil
+		}
+	case String:
+		return func(c constant.Value) (ast.Type, error) {
+			str, ok := constant.As[string](c)
+			if !ok {
+				return nil, newTypeError("unexpected literal type").
+					WithExpect(String{}).
+					WithActual(FromConstant(c))
+			}
+			return NewString(uint(len(str))), nil
+		}
+	case Array:
+		ctx.t = ctxType.Element
+		return constTypeCreationFunc(ctx)
+	default:
+		panic(fmt.Sprintf("unexpected type %T", ctx.t))
 	}
 }

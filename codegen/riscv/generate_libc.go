@@ -19,12 +19,20 @@ func (gen libcGenerator) exec(g *Generator, f *ast.File) (string, error) {
 	gen.genMalloc(g)
 	genInit(g, f)
 
+	// string utils
+	genInternalCString(g)
+	genInternalTString(g)
+
 	// provide callable builtins
 	registerAndGenerateBuiltIn(
 		g,
 		gen.provideBuiltInPrint(),
 		gen.provideBuiltInPrintLn(),
 		provideBuiltInLen(),
+		provideBuiltInConvertToByte(),
+		provideBuiltInConvertToInt(),
+		provideBuiltInConvertToString(),
+		gen.provideBuiltInRead(),
 	)
 
 	// pre-pend a call to _internal_init in main
@@ -34,28 +42,6 @@ func (gen libcGenerator) exec(g *Generator, f *ast.File) (string, error) {
 	g.asm.AddDirective(".globl main")
 
 	return g.exec(f)
-}
-
-func emitDefaultPrologue(g *Generator) {
-	// allocate space on the stack
-	g.asm.AddImmediate(sp, sp, -16)
-	// save the return address
-	g.asm.StoreAtOffset(ra, sp, 16-g.platform.RegisterSize())
-	// save the frame pointer
-	g.asm.StoreAtOffset(s0, sp, 16-g.platform.RegisterSize()*2)
-	// set the frame pointer to the base of the stack frame
-	g.asm.AddImmediate(s0, sp, 16)
-}
-
-func emitDefaultEpilogue(g *Generator) {
-	// restore the frame pointer
-	g.asm.LoadFromOffset(s0, sp, 16-g.platform.RegisterSize()*2)
-	// restore the return address
-	g.asm.LoadFromOffset(ra, sp, 16-g.platform.RegisterSize())
-	// de-allocate stack frame
-	g.asm.AddImmediate(sp, sp, 16)
-	// return to caller
-	g.asm.Return()
 }
 
 func (libcGenerator) genMalloc(g *Generator) {
@@ -81,6 +67,8 @@ func (libcGenerator) provideBuiltInPrint() builtInFunc {
 			switch expr.Arguments[0].Type().Underlying().(type) {
 			case types.Bool:
 				expr.Function.Name = internalBuiltInPrintInt
+			case types.Byte:
+				expr.Function.Name = internalBuiltInPrintInt
 			case types.Int:
 				expr.Function.Name = internalBuiltInPrintInt
 			default:
@@ -90,6 +78,7 @@ func (libcGenerator) provideBuiltInPrint() builtInFunc {
 		generate: func(g *Generator) {
 			// pre-defined zero-terminated format strings for supported types
 			g.asm.DefineData("_print_fmt_i", emitData{kind: ".asciz", value: "\"%d\""})
+			g.asm.DefineData("_print_fmt_s", emitData{kind: ".asciz", value: "\"%s\""})
 
 			g.asm.BeginProcedure(internalBuiltInPrintInt)
 			emitDefaultPrologue(g)
@@ -105,10 +94,15 @@ func (libcGenerator) provideBuiltInPrintLn() builtInFunc {
 	// print(T)
 	// if T = string, print(string) => printf(null_terminated(string))
 	// if T = int,    print(int)    => printf("%d", int)
+	// if T = byte,   print(int)    => printf("%d", byte)
 	// if T = bool,   print(bool)   => printf("%d", bool)
+	// if T = bool,   print(string) => printf("%s", string)
 	// if T = array,  unsupported
 
-	const internalBuiltInPrintLnInt = "_builtin_wrap_println_i"
+	const (
+		internalBuiltInPrintLnInt = "_builtin_wrap_println_i"
+		internalBuiltInPrintLnStr = "_builtin_wrap_println_str"
+	)
 
 	return builtInFunc{
 		name: "println",
@@ -118,6 +112,10 @@ func (libcGenerator) provideBuiltInPrintLn() builtInFunc {
 				expr.Function.Name = internalBuiltInPrintLnInt
 			case types.Int:
 				expr.Function.Name = internalBuiltInPrintLnInt
+			case types.Byte:
+				expr.Function.Name = internalBuiltInPrintLnInt
+			case types.String:
+				expr.Function.Name = internalBuiltInPrintLnStr
 			default:
 				panic(fmt.Sprintf("unsupported type for libc printf call: %s", expr))
 			}
@@ -125,6 +123,7 @@ func (libcGenerator) provideBuiltInPrintLn() builtInFunc {
 		generate: func(g *Generator) {
 			// pre-defined zero-terminated format strings for supported types
 			g.asm.DefineData("_println_fmt_i", emitData{kind: ".asciz", value: "\"%d\\n\""})
+			g.asm.DefineData("_println_fmt_s", emitData{kind: ".asciz", value: "\"%s\\n\""})
 
 			g.asm.BeginProcedure(internalBuiltInPrintLnInt)
 			emitDefaultPrologue(g)
@@ -132,6 +131,37 @@ func (libcGenerator) provideBuiltInPrintLn() builtInFunc {
 			g.asm.LoadDataAddress("_println_fmt_i", a0)
 			g.asm.Call("printf")
 			emitDefaultEpilogue(g)
+
+			g.asm.BeginProcedure(internalBuiltInPrintLnStr)
+			emitDefaultPrologue(g)
+			g.asm.Call(internalCString)
+			g.asm.Move(a1, a0)
+			g.asm.LoadDataAddress("_println_fmt_s", a0)
+			g.asm.Call("printf")
+			emitDefaultEpilogue(g)
+		},
+	}
+}
+
+func (libcGenerator) provideBuiltInRead() builtInFunc {
+	// read(fd, dst, n) -> int
+	return builtInFunc{
+		name: "read",
+		rewriteCall: func(expr *ast.CallExpression) {
+			expr.Function.Name = builtinRead
+		},
+		generate: func(g *Generator) {
+			g.asm.BeginProcedure(builtinRead)
+
+			emitDefaultPrologue(g)
+			defer emitDefaultEpilogue(g)
+
+			// a0 = fd
+			// a1 = buf
+			g.asm.AddImmediate(a1, a1, g.platform.RegisterSize())
+			// a2 = len
+			// libc call read(fd, dst, n)
+			g.asm.Call("read")
 		},
 	}
 }

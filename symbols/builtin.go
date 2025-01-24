@@ -3,6 +3,7 @@ package symbols
 var builtInIdentifiers = []string{
 	"print",
 	"println",
+	"read",
 	"len",
 }
 

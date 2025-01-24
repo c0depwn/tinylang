@@ -85,6 +85,7 @@ const (
 
 	Int    = "int"
 	Bool   = "bool"
+	Byte   = "byte"
 	String = "string"
 )
 
@@ -101,6 +102,7 @@ var keywords = map[string]Type{
 	"return": Return,
 	"int":    Int,
 	"bool":   Bool,
+	"byte":   Byte,
 	"string": String,
 }
 

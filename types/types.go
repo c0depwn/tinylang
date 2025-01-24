@@ -3,6 +3,7 @@ package types
 import (
 	"fmt"
 	"github.com/c0depwn/tinylang/ast"
+	"github.com/c0depwn/tinylang/constant"
 	ext "github.com/c0depwn/tinylang/pkg/slices"
 	"github.com/c0depwn/tinylang/token"
 	"reflect"
@@ -10,20 +11,9 @@ import (
 	"strings"
 )
 
-// AllocationKind defines how a type is allocated.
-// In TinyLang strings and arrays are heap allocated
-// and are therefore of kind AllocPointer.
-// This does not necessarily mean that those
-// types can be treated as Pointer but rather
-// that they will be stored on the heap.
-type AllocationKind int
-
-const (
-	AllocValue AllocationKind = iota
-	AllocPointer
-)
-
-type Int struct{}
+type Int struct {
+	c *constant.Value
+}
 
 func NewInt() Int {
 	return Int{}
@@ -38,7 +28,31 @@ func (i Int) Equals(some ast.Type) bool {
 	return ok
 }
 
+func (i Int) setConst(c constant.Value) Int {
+	i.c = &c
+	return i
+}
+
 func (i Int) Underlying() ast.Type {
+	return i
+}
+
+type Byte struct{}
+
+func NewByte() Byte {
+	return Byte{}
+}
+
+func (i Byte) String() string {
+	return "byte"
+}
+
+func (i Byte) Equals(some ast.Type) bool {
+	_, ok := some.(Byte)
+	return ok
+}
+
+func (i Byte) Underlying() ast.Type {
 	return i
 }
 
@@ -62,10 +76,10 @@ func (b Bool) Underlying() ast.Type {
 }
 
 type String struct {
-	Length uint32
+	Length uint
 }
 
-func NewString(len uint32) String {
+func NewString(len uint) String {
 	return String{Length: len}
 }
 
@@ -84,10 +98,10 @@ func (s String) Underlying() ast.Type {
 
 type Array struct {
 	Element ast.Type
-	Length  uint32
+	Length  uint
 }
 
-func NewArray(len uint32, elem ast.Type) Array {
+func NewArray(len uint, elem ast.Type) Array {
 	return Array{Element: elem, Length: len}
 }
 
@@ -238,6 +252,7 @@ func As[T ast.Type](t ast.Type) T {
 
 var prefixOperatorsByType = map[reflect.Type][]token.Type{
 	reflect.TypeOf(Int{}):  {token.Sub, token.Sum},
+	reflect.TypeOf(Byte{}): {token.Sub, token.Sum},
 	reflect.TypeOf(Bool{}): {token.Excl},
 }
 
@@ -250,6 +265,25 @@ var prefixOperatorsByType = map[reflect.Type][]token.Type{
 // and allow easily adding type specific implementations
 var infixOperatorsByType = map[reflect.Type][]token.Type{
 	reflect.TypeOf(Int{}): {
+		token.Sum,
+		token.Sub,
+		token.Mul,
+		token.Div,
+		token.Mod,
+		token.BitwiseAnd,
+		token.BitwiseOr,
+		token.BitwiseXor,
+		token.BitShiftL,
+		token.BitShiftR,
+		// comparison ops
+		token.Equal,
+		token.NotEqual,
+		token.LessThan,
+		token.LessThanEqual,
+		token.GreaterThan,
+		token.GreaterThanEqual,
+	},
+	reflect.TypeOf(Byte{}): {
 		token.Sum,
 		token.Sub,
 		token.Mul,

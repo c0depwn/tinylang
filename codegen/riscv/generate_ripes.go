@@ -20,12 +20,20 @@ func (gen ripesGenerator) exec(g *Generator, f *ast.File) (string, error) {
 	gen.genMalloc(g)
 	genInit(g, f)
 
+	// string utils
+	genInternalCString(g)
+	genInternalTString(g)
+
 	// provide callable builtins
 	registerAndGenerateBuiltIn(
 		g,
 		gen.provideBuiltInPrint(),
 		gen.provideBuiltInPrintLn(),
+		gen.provideBuiltInRead(),
 		provideBuiltInLen(),
+		provideBuiltInConvertToByte(),
+		provideBuiltInConvertToInt(),
+		provideBuiltInConvertToString(),
 	)
 
 	// pre-pend a call to _internal_init in main
@@ -53,7 +61,7 @@ ret
 // the allocated memory is returned. The heap starts at a fixed address.
 // There is no "free" implementation, the heap will grow indefinitely.
 // No checks are implemented to avoid writing into the stack.
-// The resulting procedure is available at the label "bump_malloc".
+// The resulting procedure is available at the label internalMalloc.
 // Arguments: 	size, passed through a0
 // Returns: 	pointer, returned through a0
 func (ripesGenerator) genMalloc(g *Generator) {
@@ -93,23 +101,30 @@ func (gen ripesGenerator) provideBuiltInPrint() builtInFunc {
 		},
 		generate: func(g *Generator) {
 			g.asm.BeginProcedure("_print_int")
-			gen.emitPrologue(g)
+			emitDefaultPrologue(g)
 			g.asm.LoadImmediate(a7, 1)
 			g.asm.SysCall()
-			gen.emitEpilogue(g)
+			emitDefaultEpilogue(g)
+
+			g.asm.BeginProcedure("_print_byte")
+			emitDefaultPrologue(g)
+			g.asm.LoadImmediate(a7, 1)
+			g.asm.SysCall()
+			emitDefaultEpilogue(g)
 
 			g.asm.BeginProcedure("_print_bool")
-			gen.emitPrologue(g)
+			emitDefaultPrologue(g)
 			g.asm.LoadImmediate(a7, 1)
 			g.asm.SysCall()
-			gen.emitEpilogue(g)
+			emitDefaultEpilogue(g)
 
 			// TODO: bug: won't work 100% because ripes expects null terminated string
 			g.asm.BeginProcedure("_print_string")
-			gen.emitPrologue(g)
+			emitDefaultPrologue(g)
+			g.asm.Call(internalCString)
 			g.asm.LoadImmediate(a7, 4)
 			g.asm.SysCall()
-			gen.emitEpilogue(g)
+			emitDefaultEpilogue(g)
 		},
 	}
 }
@@ -123,53 +138,63 @@ func (gen ripesGenerator) provideBuiltInPrintLn() builtInFunc {
 		generate: func(g *Generator) {
 			// print(int) then print("\n")
 			g.asm.BeginProcedure("_println_int")
-			gen.emitPrologue(g)
+			emitDefaultPrologue(g)
 			g.asm.Call("_print_int")
 			g.asm.LoadImmediate(a0, 10)
 			g.asm.LoadImmediate(a7, 11)
 			g.asm.SysCall()
-			gen.emitEpilogue(g)
+			emitDefaultEpilogue(g)
+
+			g.asm.BeginProcedure("_println_byte")
+			emitDefaultPrologue(g)
+			g.asm.Call("_print_byte")
+			g.asm.LoadImmediate(a0, 10)
+			g.asm.LoadImmediate(a7, 11)
+			g.asm.SysCall()
+			emitDefaultEpilogue(g)
 
 			// print(int) then print("\n")
 			g.asm.BeginProcedure("_println_bool")
-			gen.emitPrologue(g)
+			emitDefaultPrologue(g)
 			g.asm.Call("_print_int")
 			g.asm.LoadImmediate(a0, 10)
 			g.asm.LoadImmediate(a7, 11)
 			g.asm.SysCall()
-			gen.emitEpilogue(g)
+			emitDefaultEpilogue(g)
 
-			// TODO: bug: won't work cause ripes expects null terminated strings
 			// print(str) then print("\n")
 			g.asm.BeginProcedure("_println_string")
-			gen.emitPrologue(g)
+			emitDefaultPrologue(g)
 			g.asm.Call("_print_string")
 			g.asm.LoadImmediate(a0, 10)
 			g.asm.LoadImmediate(a7, 11)
 			g.asm.SysCall()
-			gen.emitEpilogue(g)
+			emitDefaultEpilogue(g)
 		},
 	}
 }
 
-func (gen ripesGenerator) emitPrologue(g *Generator) {
-	// allocate space on the stack
-	g.asm.AddImmediate(sp, sp, -16)
-	// save the return address
-	g.asm.StoreAtOffset(ra, sp, 16-g.platform.RegisterSize())
-	// save the frame pointer
-	g.asm.StoreAtOffset(s0, sp, 16-g.platform.RegisterSize()*2)
-	// set the frame pointer to the base of the stack frame
-	g.asm.AddImmediate(s0, sp, 16)
-}
+func (gen ripesGenerator) provideBuiltInRead() builtInFunc {
+	// read(fd, dst, n) -> int
+	const internalRead = "_internal_read"
+	return builtInFunc{
+		name: "read",
+		rewriteCall: func(expr *ast.CallExpression) {
+			expr.Function.Name = internalRead
+		},
+		generate: func(g *Generator) {
+			g.asm.BeginProcedure(internalRead)
 
-func (gen ripesGenerator) emitEpilogue(g *Generator) {
-	// restore the frame pointer
-	g.asm.LoadFromOffset(s0, sp, 16-g.platform.RegisterSize()*2)
-	// restore the return address
-	g.asm.LoadFromOffset(ra, sp, 16-g.platform.RegisterSize())
-	// de-allocate stack frame
-	g.asm.AddImmediate(sp, sp, 16)
-	// return from func call
-	g.asm.Return()
+			emitDefaultPrologue(g)
+			defer emitDefaultEpilogue(g)
+
+			// a0 = fd
+			// a1 = buf
+			g.asm.AddImmediate(a1, a1, g.platform.RegisterSize())
+			// a2 = len
+			// syscall read(fd, dst, n)
+			g.asm.LoadImmediate(a7, 63)
+			g.asm.SysCall()
+		},
+	}
 }

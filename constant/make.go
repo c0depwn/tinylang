@@ -1,6 +1,9 @@
 package constant
 
-import "fmt"
+import (
+	"fmt"
+	"math/big"
+)
 
 func Make(v any) Value {
 	switch underlyingV := v.(type) {
@@ -18,7 +21,7 @@ func Make(v any) Value {
 func MakeInt(v int) Value {
 	return intValue{
 		literal: fmt.Sprintf("%d", v),
-		v:       int64(v),
+		v:       big.NewInt(int64(v)),
 	}
 }
 

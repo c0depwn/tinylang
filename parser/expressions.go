@@ -109,6 +109,9 @@ func newParseFuncs(p *parser) parseFuncs {
 	pf.registerPrefix(token.False, p.parseBasicLiteral)
 	pf.registerPrefix(token.LParen, p.parseGroupExpression)
 	pf.registerPrefix(token.LBracket, p.parseArrayLiteral)
+	pf.registerPrefix(token.Byte, p.parseConversion)
+	pf.registerPrefix(token.Int, p.parseConversion)
+	pf.registerPrefix(token.String, p.parseConversion)
 
 	pf.registerInfix(token.Mul, p.parseInfixExpression)
 	pf.registerInfix(token.Div, p.parseInfixExpression)

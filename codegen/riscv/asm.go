@@ -104,6 +104,7 @@ type pseudoASM interface {
 	GreaterThan(dst, a, b Register)
 	GreaterThanOrEqual(dst, a, b Register)
 
+	SetEqualZero(dst, src Register)
 	// ops for a single operand OP(a)
 
 	Neg(dst, a Register)
@@ -286,6 +287,10 @@ func (p *commonRV) LoadImmediate(dst Register, value int) {
 
 func (p *commonRV) Move(rd, rs1 Register) {
 	p.emit(fmt.Sprintf("addi %s, %s, 0", rd, rs1))
+}
+
+func (p *commonRV) SetEqualZero(set, eval Register) {
+	p.emit(fmt.Sprintf("seqz %s, %s", set, eval))
 }
 
 type size int

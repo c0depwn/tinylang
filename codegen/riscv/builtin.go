@@ -50,3 +50,59 @@ func provideBuiltInLen() builtInFunc {
 		},
 	}
 }
+
+func provideBuiltInConvertToByte() builtInFunc {
+	return builtInFunc{
+		name: "byte",
+		rewriteCall: func(expr *ast.CallExpression) {
+			expr.Function.Name = internalToByte
+		},
+		generate: func(g *Generator) {
+			g.asm.BeginProcedure(internalToByte)
+
+			emitDefaultPrologue(g)
+			defer emitDefaultEpilogue(g)
+
+			g.asm.LoadImmediate(t0, 0b11111111)
+			g.asm.And(a0, a0, t0)
+		},
+	}
+}
+
+func provideBuiltInConvertToString() builtInFunc {
+	return builtInFunc{
+		name: "string",
+		rewriteCall: func(expr *ast.CallExpression) {
+			expr.Function.Name = internalToString
+		},
+		generate: func(g *Generator) {
+			g.asm.BeginProcedure(internalToString)
+
+			emitDefaultPrologue(g)
+			defer emitDefaultEpilogue(g)
+
+			// TODO: improvement instead of creating empty/NOP internal funcs
+			//       find a way to inline and or rewrite AST
+		},
+	}
+}
+
+func provideBuiltInConvertToInt() builtInFunc {
+	return builtInFunc{
+		name: "int",
+		rewriteCall: func(expr *ast.CallExpression) {
+			expr.Function.Name = internalToInt
+		},
+		generate: func(g *Generator) {
+			g.asm.BeginProcedure(internalToInt)
+
+			emitDefaultPrologue(g)
+			defer emitDefaultEpilogue(g)
+
+			g.asm.AddImmediate(a0, a0, 0)
+
+			// TODO: improvement instead of creating empty/NOP internal funcs
+			//       find a way to inline and or rewrite AST
+		},
+	}
+}

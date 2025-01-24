@@ -69,6 +69,7 @@ func provideBuiltInPrint() builtInFunc {
 			// TODO: improvement: support Array
 			case String:
 			case Int:
+			case Byte:
 			case Bool:
 			case Pointer:
 			default:
@@ -97,6 +98,7 @@ func provideBuiltInPrintLn() builtInFunc {
 			// TODO: improvement: support Array
 			case String:
 			case Int:
+			case Byte:
 			case Bool:
 			case Pointer:
 			default:
@@ -106,5 +108,105 @@ func provideBuiltInPrintLn() builtInFunc {
 			return nil
 		},
 		provideResultT: func() ast.Type { return NewVoid() },
+	}
+}
+
+func provideBuiltInByte() builtInFunc {
+	return builtInFunc{
+		identifier: "byte",
+		checkCall: func(args []ast.Expression) error {
+			if len(args) != 1 {
+				return newTypeError("byte expects 1 arguments")
+			}
+
+			switch args[0].Type().(type) {
+			case Int:
+			default:
+				return newTypeError(fmt.Sprintf("'%s' cannot be converted to byte", args[0].Type()))
+			}
+
+			return nil
+		},
+		provideResultT: func() ast.Type { return NewByte() },
+	}
+}
+
+func provideBuiltInString() builtInFunc {
+	var captureStrLen uint
+	return builtInFunc{
+		identifier: "string",
+		checkCall: func(args []ast.Expression) error {
+			if len(args) != 1 {
+				return newTypeError("string expects 1 arguments")
+			}
+
+			arr, ok := args[0].Type().(Array)
+			if !ok {
+				return newTypeError(fmt.Sprintf("'%s' cannot be converted to string", args[0].Type()))
+			}
+
+			if !arr.Element.Equals(Byte{}) {
+				return newTypeError(fmt.Sprintf("'%s' array cannot be converted to string", arr.Element))
+			}
+
+			captureStrLen = arr.Length
+
+			return nil
+		},
+		provideResultT: func() ast.Type {
+			return NewString(captureStrLen)
+		},
+	}
+}
+
+func provideBuiltInInt() builtInFunc {
+	return builtInFunc{
+		identifier: "int",
+		checkCall: func(args []ast.Expression) error {
+			if len(args) != 1 {
+				return newTypeError("int expects 1 arguments")
+			}
+
+			switch args[0].Type().(type) {
+			case Byte:
+			default:
+				return newTypeError(fmt.Sprintf("'%s' cannot be converted to int", args[0].Type()))
+			}
+
+			return nil
+		},
+		provideResultT: func() ast.Type { return NewInt() },
+	}
+}
+
+func provideBuiltInRead() builtInFunc {
+	return builtInFunc{
+		identifier: "read",
+		checkCall: func(args []ast.Expression) error {
+			if len(args) != 3 {
+				return newTypeError("read expects 3 arguments")
+			}
+
+			if !args[0].Type().Equals(Int{}) {
+				return newTypeError("read expects an integer as the first argument (fd)")
+			}
+
+			switch t := args[1].Type().(type) {
+			case Array:
+				if !t.Element.Equals(Byte{}) {
+					return newTypeError("read expects a pointer to a buffer (string or byte array) as the second argument")
+				}
+			case String:
+			default:
+				return newTypeError("read expects a pointer to a buffer (string or byte array) as the second argument")
+			}
+
+			if !args[2].Type().Equals(Int{}) {
+				return newTypeError("read expects an integer as the last argument (num of bytes to read)")
+			}
+
+			return nil
+		},
+		provideResultT: func() ast.Type { return NewInt() },
 	}
 }

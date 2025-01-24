@@ -1,8 +1,10 @@
 package constant
 
 import (
+	"errors"
 	"fmt"
 	"github.com/c0depwn/tinylang/token"
+	"math/big"
 	"strconv"
 )
 
@@ -40,32 +42,62 @@ type Value interface {
 }
 
 func FromLiteral(literal token.Token) Value {
+	var (
+		v Value
+		e error
+	)
+
 	switch literal.Type {
 	case token.IntegerLit:
-		return makeInt(literal)
+		v, e = makeInt(literal)
 	case token.StringLit:
-		return makeString(literal)
+		v = makeString(literal)
 	case token.True:
-		return makeBool(literal)
+		v, e = makeBool(literal)
 	case token.False:
-		return makeBool(literal)
+		v, e = makeBool(literal)
 	default:
 		panic(fmt.Errorf("unexpected literal token type %s", literal.Type))
 	}
+
+	if e != nil {
+		panic(e)
+	}
+
+	return v
 }
 
-func AsInt32(value Value) int32 {
-	// TODO: safe conversion and checks
-	return int32(value.(intValue).v)
+func AsInt(value Value) (int, error) {
+	intVal, ok := value.(intValue)
+	if !ok {
+		return 0, errors.New("value is not an integer")
+	}
+
+	if intVal.v.BitLen() > 64 {
+		return 0, errors.New("value is too big for signed int")
+	}
+
+	return int(intVal.v.Int64()), nil
 }
 
-func AsInt(value Value) int {
-	// TODO: safe conversion and checks
-	return int(value.(intValue).v)
+func AsByte(value Value) (byte, error) {
+	// all numeric literals are currently int literals
+	v, ok := value.(intValue)
+	if !ok {
+		return 0, errors.New("value is not an integer")
+	}
+	if v.v.BitLen() > 8 {
+		return 0, fmt.Errorf("value is too big for byte need at least %d bits", v.v.BitLen())
+	}
+	return byte(v.v.Uint64()), nil
 }
 
-func AsBool(value Value) bool {
-	return value.(boolValue).v
+func AsBool(value Value) (bool, error) {
+	boolValue, ok := value.(boolValue)
+	if !ok {
+		return false, errors.New("value is not a boolean")
+	}
+	return boolValue.v, nil
 }
 
 func As[T any](value Value) (T, bool) {
@@ -90,7 +122,7 @@ func (b boolValue) any() any {
 	return b.v
 }
 
-func makeBool(t token.Token) Value {
+func makeBool(t token.Token) (Value, error) {
 	// precondition
 	if t.Type != token.True && t.Type != token.False {
 		panic(fmt.Errorf("unexpected literal token type %s", t.Type))
@@ -98,13 +130,13 @@ func makeBool(t token.Token) Value {
 
 	v, err := strconv.ParseBool(t.Literal)
 	if err != nil {
-		panic(fmt.Errorf("failed to convert literal to bool: %w", err))
+		return nil, fmt.Errorf("failed to convert literal to bool: %w", err)
 	}
 
 	return boolValue{
 		literal: t.Literal,
 		v:       v,
-	}
+	}, nil
 }
 
 type stringValue struct {
@@ -133,7 +165,7 @@ func makeString(t token.Token) Value {
 
 type intValue struct {
 	literal string
-	v       int64
+	v       *big.Int
 }
 
 func (iv intValue) Type() Type {
@@ -148,20 +180,20 @@ func (iv intValue) any() any {
 	return iv.v
 }
 
-func makeInt(t token.Token) Value {
+func makeInt(t token.Token) (Value, error) {
 	// precondition
 	if t.Type != token.IntegerLit {
 		panic(fmt.Errorf("unexpected literal token type %s", t.Type))
 	}
 
-	// by default, int is a signed 32-bit integer
-	intVal, err := strconv.ParseInt(t.Literal, 0, 64)
-	if err != nil {
-		panic(fmt.Errorf("failed to convert literal to int: %w", err))
+	bigInt := new(big.Int)
+	bigInt, ok := bigInt.SetString(t.Literal, 0)
+	if !ok {
+		return nil, fmt.Errorf("%s is not a valid integer", t.Literal)
 	}
 
 	return intValue{
 		literal: t.Literal,
-		v:       intVal,
-	}
+		v:       bigInt,
+	}, nil
 }

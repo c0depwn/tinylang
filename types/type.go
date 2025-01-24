@@ -13,6 +13,8 @@ func FromBasic(identifier *ast.BasicTypeName) ast.Type {
 	switch identifier.Name {
 	case token.Int:
 		return NewInt()
+	case token.Byte:
+		return NewByte()
 	case token.Bool:
 		return NewBool()
 	case token.String:
@@ -33,8 +35,8 @@ func FromTypeIdentifier(id ast.TypeIdentifier) ast.Type {
 	case *ast.BasicTypeName:
 		return FromBasic(t)
 	case *ast.ArrayType:
-		length := uint32(constant.AsInt(t.Len.Value()))
-		return NewArray(length, FromTypeIdentifier(t.ElementType))
+		length, _ := constant.AsInt(t.Len.Value())
+		return NewArray(uint(length), FromTypeIdentifier(t.ElementType))
 	default:
 		panic(fmt.Sprintf("unknown type identifier: %+v", id))
 	}
@@ -47,8 +49,8 @@ func FromConstant(c constant.Value) ast.Type {
 	case constant.Bool:
 		return NewBool()
 	case constant.String:
-		str, _ := constant.As[string](c)   // TODO: utf-8?
-		return NewString(uint32(len(str))) // TODO: size check
+		str, _ := constant.As[string](c) // TODO: utf-8?
+		return NewString(uint(len(str))) // TODO: size check
 	default:
 		panic(fmt.Sprintf("unknown constant value type: %+v", c))
 	}

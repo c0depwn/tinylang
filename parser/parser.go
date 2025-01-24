@@ -739,8 +739,8 @@ func (p *parser) parseArrayType() *ast.ArrayType {
 
 // ArrayLiteral = ArrayType "{" Expression { "," Expression } "}" .
 func (p *parser) parseArrayLiteral() ast.Expression {
-	p.tracer.begin("parseArrayLiteral2")
-	defer p.tracer.end("parseArrayLiteral2")
+	p.tracer.begin("parseArrayLiteral")
+	defer p.tracer.end("parseArrayLiteral")
 
 	// precondition
 	p.assert(p.currentIs(token.LBracket), "parseArrayLiteral must be called with '[' as the current token")
@@ -768,6 +768,24 @@ func (p *parser) parseArrayLiteral() ast.Expression {
 	})
 
 	return lit
+}
+
+func (p *parser) parseConversion() ast.Expression {
+	p.tracer.begin("parseConversion")
+	defer p.tracer.end("parseConversion")
+
+	// T(x)
+	callExpr := new(ast.CallExpression)
+	callExpr.SetPosition(p.current.Position)
+	callExpr.Function = &ast.Identifier{Name: p.current.Literal}
+
+	// consume the left parenthesis
+	p.advance()
+
+	argExpr := p.parseExpression(Lowest)
+	callExpr.Arguments = append(callExpr.Arguments, argExpr)
+
+	return callExpr
 }
 
 func (p *parser) parseIdentifier() ast.Expression {
@@ -803,6 +821,7 @@ func (p *parser) parseBasicTypeName() *ast.BasicTypeName {
 		p.currentIs(token.Identifier) ||
 			p.currentIs(token.Int) ||
 			p.currentIs(token.Bool) ||
+			p.currentIs(token.Byte) ||
 			p.currentIs(token.String),
 		fmt.Sprintf(
 			"parseIdentifier must be called with identifier as the current token, got %v",
@@ -814,7 +833,7 @@ func (p *parser) parseBasicTypeName() *ast.BasicTypeName {
 	id.SetPosition(p.current.Position)
 	id.Name = p.current.Literal
 
-	builtin := []token.Type{token.Int, token.Bool, token.String}
+	builtin := []token.Type{token.Int, token.Bool, token.String, token.Byte}
 	if slices.Contains(builtin, p.current.Type) {
 		return id
 	}
