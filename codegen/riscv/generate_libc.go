@@ -59,7 +59,10 @@ func (libcGenerator) provideBuiltInPrint() builtInFunc {
 	// if T = bool,   print(bool)   => printf("%d", bool)
 	// if T = array,  unsupported
 
-	const internalBuiltInPrintInt = "_builtin_wrap_printf_i"
+	const (
+		internalBuiltInPrintInt = "_builtin_wrap_printf_i"
+		internalBuiltInPrintStr = "_builtin_wrap_printf_str"
+	)
 	// alternative: transform print(arg) to printf(fmt_string, arg)
 	return builtInFunc{
 		name: "print",
@@ -69,6 +72,8 @@ func (libcGenerator) provideBuiltInPrint() builtInFunc {
 				expr.Function.Name = internalBuiltInPrintInt
 			case types.Byte:
 				expr.Function.Name = internalBuiltInPrintInt
+			case types.String:
+				expr.Function.Name = internalBuiltInPrintStr
 			case types.Int:
 				expr.Function.Name = internalBuiltInPrintInt
 			default:
@@ -84,6 +89,14 @@ func (libcGenerator) provideBuiltInPrint() builtInFunc {
 			emitDefaultPrologue(g)
 			g.asm.Move(a1, a0)
 			g.asm.LoadDataAddress("_print_fmt_i", a0)
+			g.asm.Call("printf")
+			emitDefaultEpilogue(g)
+
+			g.asm.BeginProcedure(internalBuiltInPrintStr)
+			emitDefaultPrologue(g)
+			g.asm.Call(internalCString)
+			g.asm.Move(a1, a0)
+			g.asm.LoadDataAddress("_print_fmt_s", a0)
 			g.asm.Call("printf")
 			emitDefaultEpilogue(g)
 		},

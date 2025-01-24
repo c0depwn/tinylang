@@ -119,7 +119,7 @@ func (g *Generator) exec(file *ast.File) (string, error) {
 		}
 	}
 
-	return g.asm.String(), nil
+	return g.asm.String() + "\n", nil
 }
 
 func (g *Generator) statement(statement ast.Statement) {
@@ -183,27 +183,27 @@ func (g *Generator) varDeclaration(declaration *ast.VarDeclaration) {
 		resultRegister = g.registers.allocTemp()
 		defer g.registers.free(resultRegister)
 
-		if arrT, ok := declaration.Type().(types.Array); ok {
-			g.allocEmptyArray(arrT)
+		switch declT := declaration.Type().(type) {
+		case types.Array:
+			g.allocEmptyArray(declT)
 			g.asm.Pop(resultRegister)
-		}
-		if strT, ok := declaration.Type().(types.String); ok {
+		case types.String:
 			// allocate size field + len
 			g.asm.LoadImmediate(a0, g.platform.RegisterSize())
 			g.asm.Call(internalMalloc)
 
 			// save the length of the string (this is always 0)
 			temp := g.registers.allocTemp()
-			g.asm.AddImmediate(temp, x0, int(strT.Length))
+			g.asm.AddImmediate(temp, x0, int(declT.Length))
 			g.asm.StoreAtOffset(temp, a0, 0)
 			g.registers.free(temp)
 
 			// save addr of allocated string in result reg
 			g.asm.Move(resultRegister, a0)
-		}
+		default:
 
-		// x0 is always 0
-		resultRegister = x0
+			resultRegister = x0
+		}
 	}
 
 	g.writeTo(declaration.Identifier, resultRegister, sizeOfResult)
@@ -784,7 +784,6 @@ func (g *Generator) callExpression(expr *ast.CallExpression) (Register, size) {
 
 		// deref if necessary (e.g. x[0] is a ptr to elem, we want the elem)
 		if types.IsPointer(argExpr.Type()) {
-			//g.asm.LoadFromOffset(argReg, argReg, 0)
 			g.asm.LoadNFromOffset(argSize, argReg, argReg, 0)
 		}
 

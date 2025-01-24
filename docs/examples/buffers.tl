@@ -15,10 +15,11 @@ fn main() {
     };
 
     // convert the buffer to a string and print out what the user entered
-    print(`your name is: `);
+    println(`your name is: `);
     println(string(nameBuf));
 
     // print out the ASCII codes one-by-one
+    println(`buffer content: `);
     for var i int = 0; i < len(nameBuf); i += 1 {
         println(nameBuf[i]);
     };

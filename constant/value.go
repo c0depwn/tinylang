@@ -177,7 +177,7 @@ func (iv intValue) String() string {
 }
 
 func (iv intValue) any() any {
-	return iv.v
+	return iv.v.Int64()
 }
 
 func makeInt(t token.Token) (Value, error) {

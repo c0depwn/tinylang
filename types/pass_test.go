@@ -90,8 +90,6 @@ func (s symbols) Before(ast.Node) {}
 func (s symbols) After(ast.Node) {}
 
 func (s symbols) register(decl ast.Declaration) {
-	fmt.Printf("registering decl %s\n", decl)
-
 	s.m[decl.Name()] = decl
 }
 
@@ -104,7 +102,7 @@ func TestAnalyze_Var(t *testing.T) {
 		newBasicV(false),
 	)
 
-	expectErr := newTypeError(varErrInvalidInit).
+	expectErr := newTypeError("unexpected literal type").
 		WithExpect(NewInt()).
 		WithActual(NewBool())
 
@@ -127,7 +125,7 @@ func TestAnalyze_Const(t *testing.T) {
 		newBasicV(false),
 	)
 
-	expectErr := newTypeError(constErrInvalidInit).
+	expectErr := newTypeError("unexpected literal type").
 		WithExpect(NewInt()).
 		WithActual(NewBool())
 
@@ -305,7 +303,7 @@ func TestAnalyze_ArrayLiteralInvalid(t *testing.T) {
 				},
 			),
 			expect: newTypeError(fmt.Sprintf(arrayLitErrIncorrectElementTypeFmt, 0)).
-				WithExpect(NewArray(uint32(2), NewInt())).
+				WithExpect(NewArray(uint(2), NewInt())).
 				WithActual(NewInt()),
 		},
 	}

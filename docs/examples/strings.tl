@@ -1,4 +1,4 @@
-var s string = `asdf`;
+var s string = `hello, world!`;
 fn main() {
     print(s);
 }

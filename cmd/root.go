@@ -18,6 +18,9 @@ func Exec() {
 	rootCmd.AddCommand(newTypesCommand())
 	rootCmd.AddCommand(newCompileCommand())
 
+	rootCmd.SilenceUsage = true
+	rootCmd.SilenceErrors = true
+
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
